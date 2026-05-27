@@ -1,0 +1,64 @@
+# =============================================================================
+# omni.geojson.loader - Extension manifest (Kit SDK 106.x)
+# =============================================================================
+# This manifest is read by omni.kit.app when the extension is enabled.
+# Keep it ASCII; descriptions can be UTF-8.
+# =============================================================================
+
+[package]
+# Semantic version of the extension.
+version       = "0.1.0"
+
+# Human readable metadata shown in the Extensions Manager.
+title         = "GeoJSON Loader"
+description   = "Load a GeoJSON file and visualize its features as USD prims in the current stage."
+category      = "Data Import"
+keywords      = ["geojson", "gis", "import", "usd", "geospatial", "mvp"]
+authors       = ["Your Team"]
+repository    = ""
+changelog     = "docs/CHANGELOG.md"
+readme        = "docs/README.md"
+
+# Target the 106 series of Kit SDK (kit-app-template default).
+[package.target]
+kit = ["106.0", "106.1", "106.2", "106.5"]
+
+# -----------------------------------------------------------------------------
+# Dependencies on other Kit extensions.
+# Only well-known, ABI stable extensions are listed for the MVP.
+# -----------------------------------------------------------------------------
+[dependencies]
+"omni.kit.uiapp"          = {}   # bootstraps omni.ui, menus, etc.
+"omni.ui"                 = {}   # UI toolkit used by the loader window
+"omni.usd"                = {}   # access to the current Stage
+"omni.kit.menu.utils"     = {}   # add the loader to the Window menu
+"omni.kit.window.filepicker" = { optional = true }  # native file picker (Kit 106)
+
+# -----------------------------------------------------------------------------
+# Python module exposed by this extension.
+# The path mirrors the folder layout: omni/geojson/loader/__init__.py
+# -----------------------------------------------------------------------------
+[[python.module]]
+name = "omni.geojson.loader"
+
+# -----------------------------------------------------------------------------
+# Settings consumed by the extension at runtime.
+# Values can be overridden by the user in their .kit app file.
+# -----------------------------------------------------------------------------
+[settings."exts.omni.geojson.loader"]
+default_height    = 0.0       # extrusion height applied to Polygons (meters)
+default_scale     = 1.0       # uniform scale applied after coordinate transform
+default_root_path = "/World/GeoJSON"  # USD prim path that hosts imported layers
+project_to_meters = true      # if true, lon/lat are converted to local meters
+
+# -----------------------------------------------------------------------------
+# Auto-load behaviour. The window is registered lazily through a menu entry,
+# so the extension is light at startup time.
+# -----------------------------------------------------------------------------
+[[test]]
+dependencies = [
+    "omni.kit.test",
+]
+args = [
+    "--no-window",
+]

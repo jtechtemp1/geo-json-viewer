@@ -1,0 +1,57 @@
+{
+  "type": "FeatureCollection",
+  "name": "sample",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "tower",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [139.7454, 35.6586]
+      },
+      "properties": {
+        "name": "Tokyo Tower",
+        "category": "landmark",
+        "height_m": 333
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "imperial-route",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [139.7530, 35.6839],
+          [139.7548, 35.6850],
+          [139.7572, 35.6849],
+          [139.7588, 35.6833]
+        ]
+      },
+      "properties": {
+        "name": "Imperial Palace approach",
+        "category": "path"
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "plaza",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [139.7560, 35.6810],
+            [139.7575, 35.6810],
+            [139.7575, 35.6820],
+            [139.7560, 35.6820],
+            [139.7560, 35.6810]
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Sample plaza",
+        "category": "polygon",
+        "extrude_m": 10
+      }
+    }
+  ]
+}
