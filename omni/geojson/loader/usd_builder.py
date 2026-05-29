@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .geojson_parser import (
@@ -48,10 +48,23 @@ class BuildOptions:
     root_path: str = "/World/GeoJSON"
     project_to_meters: bool = True
     scale: float = 1.0
-    polygon_height: float = 0.0          # extrusion height (Y axis, meters)
+    polygon_height: float = 0.0          # fallback extrusion height (m) when no property matches
     point_radius: float = 0.5             # widths attribute for UsdGeomPoints
     line_width: float = 0.25              # widths attribute for BasisCurves
     layer_name: Optional[str] = None      # used to name the import xform
+    # Property keys that drive per-feature extrusion height. The first key that
+    # resolves to a number on the feature's ``properties`` wins. Keep this list
+    # ordered from most specific to most generic.
+    height_property_keys: List[str] = field(
+        default_factory=lambda: [
+            "height",
+            "height_m",
+            "building:height",
+            "BLDG_HEIGHT",
+            "extrude",
+            "extrude_m",
+        ]
+    )
 
 
 @dataclass
@@ -112,6 +125,7 @@ def build_stage(fc: FeatureCollection, options: BuildOptions) -> BuildResult:
                 feature.geometry,
                 origin,
                 options,
+                feature.properties,
             )
         except Exception as exc:  # noqa: BLE001 - we want to keep importing
             _set_user_attr(feat_prim, "geojson:error", str(exc))
@@ -239,11 +253,12 @@ def _xyz(coord: Coord, origin: Tuple[float, float], options: BuildOptions):
 # Geometry authoring
 # ---------------------------------------------------------------------------
 def _author_geometry(stage, UsdGeom, Vt, Gf, parent_path, geom: Geometry,
-                     origin: Tuple[float, float], options: BuildOptions) -> None:
+                     origin: Tuple[float, float], options: BuildOptions,
+                     properties: Optional[Dict[str, Any]] = None) -> None:
     if geom.type == "GeometryCollection":
         for i, child in enumerate(geom.geometries):
             child_path = f"{parent_path}/g_{i:03d}"
-            _author_geometry(stage, UsdGeom, Vt, Gf, child_path, child, origin, options)
+            _author_geometry(stage, UsdGeom, Vt, Gf, child_path, child, origin, options, properties)
         return
 
     leaf_path = f"{parent_path}/geom"
@@ -255,7 +270,7 @@ def _author_geometry(stage, UsdGeom, Vt, Gf, parent_path, geom: Geometry,
         _author_curves(stage, UsdGeom, Vt, leaf_path, lines, origin, options)
     elif geom.type in ("Polygon", "MultiPolygon"):
         polys = [geom.coordinates] if geom.type == "Polygon" else geom.coordinates
-        _author_meshes(stage, UsdGeom, Vt, leaf_path, polys, origin, options)
+        _author_meshes(stage, UsdGeom, Vt, leaf_path, polys, origin, options, properties)
     else:  # pragma: no cover - parser already filtered unknown types
         raise ValueError(f"Unhandled geometry type: {geom.type}")
 
@@ -288,13 +303,20 @@ def _author_curves(stage, UsdGeom, Vt, path, lines: Sequence[Sequence[Coord]],
 
 
 def _author_meshes(stage, UsdGeom, Vt, path, polys: Sequence[PolygonRings],
-                   origin, options) -> None:
+                   origin, options, properties: Optional[Dict[str, Any]] = None) -> None:
+    """Author one mesh per feature.
+
+    When *height* (resolved from the feature's properties, falling back to the
+    global ``polygon_height`` option) is greater than zero, the polygon is
+    extruded into a solid prism with a bottom cap, a top cap and side walls.
+    Otherwise the polygon is laid flat as a single triangulated patch.
+    """
+    height = resolve_extrusion_height(properties, options)
+
     mesh = UsdGeom.Mesh.Define(stage, path)
     positions: List[Tuple[float, float, float]] = []
     face_vertex_counts: List[int] = []
     face_vertex_indices: List[int] = []
-
-    height = options.polygon_height * options.scale
 
     for poly in polys:
         if not poly:
@@ -302,23 +324,83 @@ def _author_meshes(stage, UsdGeom, Vt, path, polys: Sequence[PolygonRings],
         outer = poly[0]
         # Drop the closing duplicate before triangulation.
         ring = outer[:-1] if outer and outer[0] == outer[-1] else outer
-        if len(ring) < 3:
+        n = len(ring)
+        if n < 3:
             continue
-        base_index = len(positions)
-        ring_xyz = [_xyz(c, origin, options) for c in ring]
-        if height != 0.0:
-            ring_xyz = [(x, y + height, z) for (x, y, z) in ring_xyz]
-        positions.extend(ring_xyz)
 
-        # Simple fan triangulation - acceptable for convex MVP geometry.
-        for i in range(1, len(ring) - 1):
-            face_vertex_counts.append(3)
-            face_vertex_indices.extend([base_index, base_index + i, base_index + i + 1])
+        bottom_base = len(positions)
+        bottom_xyz = [_xyz(c, origin, options) for c in ring]
+        positions.extend(bottom_xyz)
+
+        if height > 0.0:
+            top_base = len(positions)
+            positions.extend([(x, y + height, z) for (x, y, z) in bottom_xyz])
+
+            # Bottom cap (reverse winding so the normal points down).
+            for i in range(1, n - 1):
+                face_vertex_counts.append(3)
+                face_vertex_indices.extend([
+                    bottom_base,
+                    bottom_base + i + 1,
+                    bottom_base + i,
+                ])
+
+            # Top cap (normal points up).
+            for i in range(1, n - 1):
+                face_vertex_counts.append(3)
+                face_vertex_indices.extend([
+                    top_base,
+                    top_base + i,
+                    top_base + i + 1,
+                ])
+
+            # Side walls: two triangles per edge, with outward winding that
+            # matches a CCW outer ring (standard for GeoJSON).
+            for i in range(n):
+                j = (i + 1) % n
+                b0 = bottom_base + i
+                b1 = bottom_base + j
+                t0 = top_base + i
+                t1 = top_base + j
+                face_vertex_counts.append(3)
+                face_vertex_indices.extend([b0, b1, t1])
+                face_vertex_counts.append(3)
+                face_vertex_indices.extend([b0, t1, t0])
+        else:
+            # Flat patch (no extrusion). Fan triangulation works for convex
+            # polygons; concave polygons should turn this into earcut later.
+            for i in range(1, n - 1):
+                face_vertex_counts.append(3)
+                face_vertex_indices.extend([
+                    bottom_base,
+                    bottom_base + i,
+                    bottom_base + i + 1,
+                ])
 
     mesh.CreatePointsAttr(Vt.Vec3fArray(positions))
     mesh.CreateFaceVertexCountsAttr(Vt.IntArray(face_vertex_counts))
     mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(face_vertex_indices))
     mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+
+
+def resolve_extrusion_height(properties: Optional[Dict[str, Any]],
+                             options: BuildOptions) -> float:
+    """Return the extrusion height (meters * scale) for a feature.
+
+    The first key in ``options.height_property_keys`` that exists on
+    ``properties`` and can be coerced to a finite, non-negative float wins.
+    Falls back to ``options.polygon_height`` when no key matches.
+    """
+    if properties:
+        for key in options.height_property_keys:
+            if key in properties:
+                try:
+                    value = float(properties[key])
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and value >= 0.0:
+                    return value * options.scale
+    return options.polygon_height * options.scale
 
 
 # ---------------------------------------------------------------------------
